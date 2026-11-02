@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -15,7 +16,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Gives every request an id, taken from X-Request-Id when the client sends a sane one, puts it in the logging MDC
+ * Gives every request an id, taken from X-Request-Id when the client sends a plain token (letters, digits, {@code ._:-};
+ * anything else could forge log lines or headers), puts it in the logging MDC
  * and echoes it in the response, and logs one line per API call.
  */
 @Component
@@ -24,7 +26,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
 
     public static final String HEADER = "X-Request-Id";
     public static final String MDC_KEY = "requestId";
-    private static final int MAX_LENGTH = 64;
+    private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9._:-]{1,64}");
     private static final Logger log = LoggerFactory.getLogger(RequestIdFilter.class);
 
     @Override
@@ -47,7 +49,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
 
     private static String requestIdOf(HttpServletRequest request) {
         String sent = request.getHeader(HEADER);
-        if (sent != null && !sent.isBlank() && sent.length() <= MAX_LENGTH) return sent;
+        if (sent != null && SAFE_ID.matcher(sent).matches()) return sent;
         return UUID.randomUUID().toString();
     }
 }

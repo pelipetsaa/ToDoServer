@@ -1,5 +1,6 @@
 package com.pelypets.todolist.server.adapter.out.metrics;
 
+import com.pelypets.todolist.server.domain.event.RefreshTokenReused;
 import com.pelypets.todolist.server.domain.event.TodoCreated;
 import com.pelypets.todolist.server.domain.event.UserRegistered;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -25,5 +26,11 @@ class BusinessMetrics {
     @TransactionalEventListener
     void on(TodoCreated event) {
         registry.counter("todo.todos.created").increment();
+    }
+
+    /** Worth an alert: a non-zero rate means refresh tokens are being stolen. */
+    @TransactionalEventListener
+    void on(RefreshTokenReused event) {
+        registry.counter("todo.refresh_tokens.reused").increment();
     }
 }

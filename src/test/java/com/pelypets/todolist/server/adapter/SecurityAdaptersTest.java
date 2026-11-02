@@ -16,6 +16,7 @@ class SecurityAdaptersTest {
         assertThat(hash).startsWith("$2a$04$");
         assertThat(hasher.verify("password123", hash)).isTrue();
         assertThat(hasher.verify("password124", hash)).isFalse();
+        assertThat(hasher.verify("password123", null)).isFalse();
     }
 
     @Test

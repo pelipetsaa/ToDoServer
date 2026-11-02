@@ -141,8 +141,8 @@ class AuthApiTest extends ApiTest {
 
     @Test
     void googleSignInCreatesAnAccountAndLinksAnExistingEmail() {
-        google.identities.put("new-user-token", new GoogleIdentity("g-1", "google@example.com"));
-        google.identities.put("existing-user-token", new GoogleIdentity("g-2", "Existing@example.com"));
+        google.identities.put("new-user-token", new GoogleIdentity("g-1", "google@example.com", true));
+        google.identities.put("existing-user-token", new GoogleIdentity("g-2", "Existing@example.com", true));
 
         Response created = post(GOOGLE, Map.of("idToken", "new-user-token"));
         assertThat(created.status()).isEqualTo(HttpStatus.OK);
@@ -159,7 +159,7 @@ class AuthApiTest extends ApiTest {
 
     @Test
     void linkingGoogleRevokesThePasswordAndSessionsOfWhoeverRegisteredTheEmailFirst() {
-        google.identities.put("owner-token", new GoogleIdentity("g-owner", "victim@example.com"));
+        google.identities.put("owner-token", new GoogleIdentity("g-owner", "victim@example.com", true));
         TokenPair squatter = register("victim@example.com", "squatter-password");
 
         Response owner = post(GOOGLE, Map.of("idToken", "owner-token"));
@@ -173,8 +173,8 @@ class AuthApiTest extends ApiTest {
 
     @Test
     void anEmailLinkedToOneGoogleAccountCannotBeTakenOverByAnother() {
-        google.identities.put("first", new GoogleIdentity("g-first", "shared@example.com"));
-        google.identities.put("second", new GoogleIdentity("g-second", "shared@example.com"));
+        google.identities.put("first", new GoogleIdentity("g-first", "shared@example.com", true));
+        google.identities.put("second", new GoogleIdentity("g-second", "shared@example.com", true));
 
         assertThat(post(GOOGLE, Map.of("idToken", "first")).status()).isEqualTo(HttpStatus.OK);
         assertError(post(GOOGLE, Map.of("idToken", "second")), HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
@@ -188,9 +188,77 @@ class AuthApiTest extends ApiTest {
     }
 
     @Test
+    void googleCannotTakeOverAnEmailAccountWhoseMailboxItDoesNotManage() {
+        google.identities.put("outsider", new GoogleIdentity("g-outsider", "owner@company.example", false));
+        register("owner@company.example", "password123");
+
+        assertError(post(GOOGLE, Map.of("idToken", "outsider")), HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
+        assertThat(post(LOGIN, credentials("owner@company.example", "password123")).status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void aRefreshTokenUsedTwiceRevokesTheWholeSession() {
+        TokenPair stolen = register();
+        TokenPair rotated = read(post(REFRESH, Map.of("refreshToken", stolen.refreshToken())), TokenPair.class);
+
+        assertError(post(REFRESH, Map.of("refreshToken", stolen.refreshToken())), HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
+
+        assertError(post(REFRESH, Map.of("refreshToken", rotated.refreshToken())), HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
+    }
+
+    @Test
+    void reuseRevokesOnlyTheAffectedSession() {
+        TokenPair phone = register();
+        TokenPair laptop = read(post(LOGIN, credentials("user@example.com", "password123")), TokenPair.class);
+        post(REFRESH, Map.of("refreshToken", phone.refreshToken()));
+
+        post(REFRESH, Map.of("refreshToken", phone.refreshToken()));
+
+        assertThat(post(REFRESH, Map.of("refreshToken", laptop.refreshToken())).status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void theOldestSessionsAreSignedOutBeyondTheLimit() {
+        TokenPair first = register();
+        for (int i = 0; i < 10; i++) post(LOGIN, credentials("user@example.com", "password123"));
+
+        assertThat(count("SELECT count(*) FROM refresh_tokens")).isEqualTo(10);
+        assertError(post(REFRESH, Map.of("refreshToken", first.refreshToken())), HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
+    }
+
+    @Test
+    void deletingTheAccountRemovesItsDataAndSessions() {
+        TokenPair tokens = register();
+        call(org.springframework.http.HttpMethod.POST, ApiPaths.TODOS, Map.of("title", "Mine", "dueAt", "2026-10-29T10:00:00Z"),
+                tokens.accessToken());
+
+        Response deleted = call(org.springframework.http.HttpMethod.DELETE, ApiPaths.ME, null, tokens.accessToken());
+
+        assertThat(deleted.status()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(count("SELECT count(*) FROM users") + count("SELECT count(*) FROM todos")).isZero();
+        assertError(post(REFRESH, Map.of("refreshToken", tokens.refreshToken())), HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
+        assertError(get(ApiPaths.ME, tokens.accessToken()), HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
+        assertError(call(org.springframework.http.HttpMethod.POST, ApiPaths.TODOS,
+                Map.of("title", "Orphan", "dueAt", "2026-10-29T10:00:00Z"), tokens.accessToken()),
+                HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
+        assertThat(post(LOGIN, credentials("user@example.com", "password123")).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
     void everyResponseCarriesARequestId() {
         Response generated = get(ApiPaths.HEALTH, null);
         assertThat(generated.headers().getFirst("X-Request-Id")).isNotBlank();
+    }
+
+    @Test
+    void aSafeClientRequestIdIsEchoedAndAnythingElseReplaced() {
+        assertThat(requestIdFor("app-1.2:abc_DEF")).isEqualTo("app-1.2:abc_DEF");
+        assertThat(requestIdFor("evil id\"forged=1")).isNotEqualTo("evil id\"forged=1").hasSize(36);
+    }
+
+    private String requestIdFor(String sent) {
+        return client().get().uri(ApiPaths.HEALTH).header("X-Request-Id", sent).retrieve().toBodilessEntity()
+                .getHeaders().getFirst("X-Request-Id");
     }
 
     private User me(TokenPair tokens) {

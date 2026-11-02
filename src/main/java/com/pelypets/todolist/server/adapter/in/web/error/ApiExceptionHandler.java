@@ -1,6 +1,7 @@
 package com.pelypets.todolist.server.adapter.in.web.error;
 
 import com.pelypets.todolist.server.adapter.in.web.ratelimit.RateLimitExceededException;
+import com.pelypets.todolist.server.domain.exception.ConflictException;
 import com.pelypets.todolist.server.domain.exception.DomainException;
 import com.pelypets.todolist.server.domain.exception.EmailTakenException;
 import com.pelypets.todolist.server.domain.exception.NotFoundException;
@@ -37,6 +38,7 @@ public class ApiExceptionHandler {
             case UnauthorizedException u -> error(HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED, u.getMessage());
             case NotFoundException n -> error(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, n.getMessage());
             case EmailTakenException t -> error(HttpStatus.CONFLICT, ErrorCode.EMAIL_TAKEN, t.getMessage());
+            case ConflictException c -> error(HttpStatus.CONFLICT, ErrorCode.CONFLICT, c.getMessage());
         };
     }
 

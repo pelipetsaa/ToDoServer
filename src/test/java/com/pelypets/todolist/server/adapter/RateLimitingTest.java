@@ -3,6 +3,7 @@ package com.pelypets.todolist.server.adapter;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.pelypets.todolist.server.adapter.in.web.ratelimit.AccountRateLimiter;
 import com.pelypets.todolist.server.adapter.in.web.ratelimit.AuthRateLimiter;
 import com.pelypets.todolist.server.adapter.in.web.ratelimit.ClientIpResolver;
 import com.pelypets.todolist.server.adapter.in.web.ratelimit.RateLimitExceededException;
@@ -28,7 +29,26 @@ class RateLimitingTest {
         request.setRemoteAddr("10.0.0.1");
         request.addHeader("X-Forwarded-For", "6.6.6.6, 203.0.113.7");
 
-        assertThat(new ClientIpResolver(false).resolve(request)).isEqualTo("10.0.0.1");
-        assertThat(new ClientIpResolver(true).resolve(request)).isEqualTo("203.0.113.7");
+        assertThat(new ClientIpResolver(false, 1).resolve(request)).isEqualTo("10.0.0.1");
+        assertThat(new ClientIpResolver(true, 1).resolve(request)).isEqualTo("203.0.113.7");
+    }
+
+    @Test
+    void behindTwoProxiesTheClientIsTheSecondToLastHop() {
+        var request = new MockHttpServletRequest();
+        request.addHeader("X-Forwarded-For", "6.6.6.6, 198.51.100.4, 203.0.113.7");
+
+        assertThat(new ClientIpResolver(true, 2).resolve(request)).isEqualTo("198.51.100.4");
+        assertThat(new ClientIpResolver(true, 5).resolve(request)).isEqualTo("6.6.6.6");
+    }
+
+    @Test
+    void accountsAreLimitedWhateverTheCaseOfTheEmail() {
+        var limiter = new AccountRateLimiter(2);
+        limiter.consume("Victim@example.com");
+        limiter.consume(" victim@example.com ");
+
+        assertThatThrownBy(() -> limiter.consume("VICTIM@EXAMPLE.COM")).isInstanceOf(RateLimitExceededException.class);
+        limiter.consume("other@example.com");
     }
 }

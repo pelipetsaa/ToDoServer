@@ -25,6 +25,7 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: development
+      API_DOCS_ENABLED: "true"
       DB_URL: jdbc:postgresql://postgres:5432/todolist
       DB_USER: todolist
       DB_PASSWORD: todolist

@@ -19,10 +19,13 @@ public record AppProperties(
         @NotNull AppEnvironment environment,
         /* Trust X-Forwarded-For; enable only behind a reverse proxy that sets it. */
         boolean trustProxy,
+        /* How many reverse proxies append to X-Forwarded-For; the client is that many entries from the end. */
+        @Min(1) int trustedProxyHops,
         @Valid @NotNull Jwt jwt,
         @Valid @NotNull Password password,
         @Valid @NotNull Google google,
         @Valid @NotNull RateLimit rateLimit,
+        @Valid @NotNull Todos todos,
         @Valid @NotNull Metrics metrics) {
 
     /** Signing key used only when no JWT_SECRET is set during local development. Same as the Ktor server's. */
@@ -62,10 +65,12 @@ public record AppProperties(
             @NotBlank String audience,
             @NotBlank String realm,
             @NotNull Duration accessTokenTtl,
-            @NotNull Duration refreshTokenTtl) {
+            @NotNull Duration refreshTokenTtl,
+            /* Sessions (refresh tokens) a user may have; signing in once more ends the oldest. */
+            @Positive int maxSessionsPerUser) {
 
         Jwt withSecret(String resolved) {
-            return new Jwt(resolved, issuer, audience, realm, accessTokenTtl, refreshTokenTtl);
+            return new Jwt(resolved, issuer, audience, realm, accessTokenTtl, refreshTokenTtl, maxSessionsPerUser);
         }
 
         @Override
@@ -87,8 +92,14 @@ public record AppProperties(
         }
     }
 
-    /** Requests per client IP per minute across register, login and Google sign-in. */
-    public record RateLimit(@Positive int authRequestsPerMinute) {}
+    /**
+     * Requests per client IP per minute across register, login and Google sign-in, and password sign-in attempts per
+     * account per minute whatever the IP.
+     */
+    public record RateLimit(@Positive int authRequestsPerMinute, @Positive int loginAttemptsPerAccountPerMinute) {}
+
+    /** The longest range one list request may span, and how many todos one user may have. */
+    public record Todos(@NotNull Duration maxListRange, @Positive int maxPerUser) {}
 
     /** Bearer token Prometheus sends; without it production does not expose metrics, development does. */
     public record Metrics(String token) {

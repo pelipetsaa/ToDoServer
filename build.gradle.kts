@@ -1,4 +1,5 @@
 import org.springframework.boot.gradle.plugin.SpringBootPlugin
+import org.springframework.boot.gradle.tasks.run.BootRun
 
 plugins {
     java
@@ -11,7 +12,7 @@ version = "1.0.0"
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
 }
 
@@ -32,7 +33,7 @@ dependencies {
 
     implementation(libs.spring.boot.starter.webmvc)
     implementation(libs.spring.boot.starter.validation)
-    implementation(libs.spring.boot.starter.data.jpa)
+    implementation(libs.spring.boot.starter.jdbc)
     implementation(libs.spring.boot.starter.flyway)
     implementation(libs.spring.boot.starter.security.oauth2.resource.server)
     implementation(libs.spring.boot.starter.actuator)
@@ -67,6 +68,18 @@ tasks.bootJar {
     archiveFileName = "application.jar"
 }
 
+// Downloads every jar the build needs (`dependencies` only resolves metadata), so the Docker image caches them in a
+// layer that source changes do not invalidate.
+tasks.register("resolveDependencies") {
+    val jars = files(configurations.compileClasspath, configurations.runtimeClasspath, configurations.annotationProcessor)
+    doLast { jars.files }
+}
+
+// The server defaults to production, which needs a real JWT_SECRET; local runs opt into development explicitly.
+tasks.withType<BootRun>().configureEach {
+    environment("APP_ENV", System.getenv("APP_ENV") ?: "development")
+}
+
 tasks.test {
     useJUnitPlatform()
     // Colima / Docker Desktop: Testcontainers needs the host socket path to mount it into Ryuk.
@@ -80,9 +93,28 @@ tasks.test {
     finalizedBy(tasks.jacocoTestReport)
 }
 
+jacoco {
+    // The first release that instruments Java 25 class files.
+    toolVersion = "0.8.14"
+}
+
 tasks.jacocoTestReport {
     reports {
         xml.required = true
         html.required = true
     }
+}
+
+tasks.jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                minimum = "0.85".toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(tasks.jacocoTestCoverageVerification)
 }

@@ -33,7 +33,10 @@ class OpenApiConfig {
 
                                 Every error has the body `{"code": "...", "message": "..."}`. A todo that belongs to \
                                 another user is reported as `NOT_FOUND`. Every response carries an `X-Request-Id` \
-                                header; send your own to correlate logs."""))
+                                header; send your own to correlate logs.
+
+                                A todo's `ETag` is its version; send it as `If-Match` when updating to get `CONFLICT` \
+                                instead of overwriting a change made from another device."""))
                 .servers(List.of(
                         new Server().url("https://todolist-server-zyck.onrender.com").description("Production"),
                         new Server().url("http://localhost:8080").description("Local development")))
@@ -50,7 +53,8 @@ class OpenApiConfig {
             ModelConverters.getInstance().read(ApiError.class).forEach(openApi.getComponents()::addSchemas);
             var error = new ApiResponse()
                     .description("Error; `code` is one of VALIDATION_ERROR (400), UNAUTHORIZED (401), NOT_FOUND (404), "
-                            + "EMAIL_TAKEN (409), TOO_MANY_REQUESTS (429, see `Retry-After`), INTERNAL_ERROR (500).")
+                            + "EMAIL_TAKEN (409), CONFLICT (409), TOO_MANY_REQUESTS (429, see `Retry-After`), "
+                            + "INTERNAL_ERROR (500).")
                     .content(new Content().addMediaType(org.springframework.http.MediaType.APPLICATION_JSON_VALUE,
                             new MediaType().schema(new Schema<>().$ref("#/components/schemas/Error"))));
             openApi.getPaths().forEach((path, item) -> {

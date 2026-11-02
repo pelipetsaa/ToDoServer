@@ -73,7 +73,8 @@ class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, ApiPaths.AUTH + "/**").permitAll()
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .requestMatchers(ApiPaths.BASE + "/**").authenticated()
-                        .anyRequest().denyAll())
+                        // Nothing else is mapped, so an unknown path gets a 404 rather than a misleading 401.
+                        .anyRequest().permitAll())
                 .exceptionHandling(handling -> handling.authenticationEntryPoint(entryPoint))
                 .oauth2ResourceServer(server -> server
                         .bearerTokenResolver(publicPathsIgnoringResolver())

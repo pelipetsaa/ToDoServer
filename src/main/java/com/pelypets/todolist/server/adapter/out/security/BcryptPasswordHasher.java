@@ -10,15 +10,18 @@ import com.pelypets.todolist.server.application.port.out.PasswordHasher;
  * encoder rejects such passwords. Longer passwords are pre-hashed with SHA-512 instead, shorter ones are passed
  * through unchanged. This is the scheme of the Ktor server, so hashes stored by either server verify in both.
  */
-public class BcryptPasswordHasher implements PasswordHasher {
+public final class BcryptPasswordHasher implements PasswordHasher {
 
     private static final BCrypt.Version VERSION = BCrypt.Version.VERSION_2A;
 
     private final int cost;
     private final LongPasswordStrategy longPasswords = LongPasswordStrategies.hashSha512(VERSION);
+    /** Verified when there is no real hash, so that case takes as long as a wrong password. */
+    private final String dummyHash;
 
     public BcryptPasswordHasher(int cost) {
         this.cost = cost;
+        this.dummyHash = hash("no account has this password");
     }
 
     @Override
@@ -28,6 +31,9 @@ public class BcryptPasswordHasher implements PasswordHasher {
 
     @Override
     public boolean verify(String rawPassword, String hash) {
-        return BCrypt.verifyer(VERSION, longPasswords).verify(rawPassword.toCharArray(), hash).verified;
+        boolean verified = BCrypt.verifyer(VERSION, longPasswords)
+                .verify(rawPassword.toCharArray(), hash != null ? hash : dummyHash)
+                .verified;
+        return hash != null && verified;
     }
 }
