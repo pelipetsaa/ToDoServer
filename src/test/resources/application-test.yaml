@@ -1,0 +1,8 @@
+app:
+  password:
+    # The minimum cost keeps sign-ups in tests fast; production uses 12.
+    bcrypt-cost: 4
+  rate-limit:
+    auth-requests-per-minute: 1000
+  google:
+    client-ids: ""

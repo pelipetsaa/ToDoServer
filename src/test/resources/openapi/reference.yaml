@@ -1,0 +1,352 @@
+openapi: 3.0.3
+info:
+  title: ToDo API
+  version: "1"
+  description: |
+    REST API of the ToDo app. Clients authenticate with a short-lived JWT access token (15 minutes) and rotate it
+    with a refresh token (30 days, single use).
+
+    Every error has the body `{"code": "...", "message": "..."}`. A todo that belongs to another user is reported as
+    `NOT_FOUND`. Every response carries an `X-Request-Id` header; send your own to correlate logs.
+servers:
+  - url: https://todolist-server-zyck.onrender.com
+    description: Production
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: auth
+    description: |
+      Sign-up, sign-in and token rotation. Register, login and Google sign-in are limited to 20 requests per minute
+      per client IP; refresh and logout are not limited.
+  - name: todos
+    description: The signed-in user's todos.
+  - name: ops
+    description: Health checks.
+
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Create an account
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailCredentials" }
+      responses:
+        "201":
+          description: Account created; the client is signed in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "409":
+          description: An account with this email already exists (`EMAIL_TAKEN`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Sign in with email and password
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailCredentials" }
+      responses:
+        "200":
+          description: Signed in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /api/v1/auth/google:
+    post:
+      tags: [auth]
+      summary: Sign in with a Google ID token
+      description: |
+        Exchanges an ID token obtained on the device for a token pair. Creates the account on first sign-in and links
+        it to an existing email account. Linking removes that account's password and revokes its refresh tokens,
+        because email sign-up does not prove ownership of the address. An email already linked to a different Google
+        account is rejected with `UNAUTHORIZED`.
+      operationId: loginWithGoogle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idToken]
+              properties:
+                idToken: { type: string, description: Google ID token issued for the web OAuth client }
+      responses:
+        "200":
+          description: Signed in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate the refresh token
+      description: Returns a new token pair; the refresh token sent is revoked.
+      operationId: refresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshToken" }
+      responses:
+        "200":
+          description: New token pair.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke a refresh token
+      operationId: logout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshToken" }
+      responses:
+        "204": { description: Signed out. }
+        "400": { $ref: "#/components/responses/ValidationError" }
+
+  /api/v1/me:
+    get:
+      tags: [auth]
+      summary: Current user
+      operationId: me
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The signed-in user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/todos:
+    get:
+      tags: [todos]
+      summary: Todos due in a time range
+      description: Todos with `dueAt` in `[from, to)`, sorted by due date.
+      operationId: listTodos
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time }, example: "2026-10-29T00:00:00Z" }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time }, example: "2026-10-30T00:00:00Z" }
+      responses:
+        "200":
+          description: Matching todos.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Todo" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [todos]
+      summary: Create a todo
+      operationId: createTodo
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TodoInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Todo" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/todos/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [todos]
+      summary: One todo
+      operationId: getTodo
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The todo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Todo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [todos]
+      summary: Replace a todo's editable fields
+      operationId: updateTodo
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TodoInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Todo" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [todos]
+      summary: Delete a todo
+      operationId: deleteTodo
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /health:
+    get:
+      tags: [ops]
+      summary: Liveness
+      operationId: health
+      responses:
+        "200":
+          description: The process is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /health/ready:
+    get:
+      tags: [ops]
+      summary: Readiness
+      operationId: ready
+      responses:
+        "200":
+          description: The database answers.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: The database is unreachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    EmailCredentials:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254, description: Case-insensitive; stored lower-cased }
+        password: { type: string, minLength: 8, maxLength: 128 }
+    RefreshToken:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, expiresInSeconds]
+      properties:
+        accessToken: { type: string, description: "JWT to send as `Authorization: Bearer ...`" }
+        refreshToken: { type: string }
+        expiresInSeconds: { type: integer, format: int64, example: 900 }
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+    TodoStatus:
+      type: string
+      enum: [TODO, IN_PROGRESS, DONE]
+    TodoInput:
+      type: object
+      required: [title, dueAt]
+      properties:
+        title: { type: string, maxLength: 200, description: Trimmed; must not be blank }
+        description: { type: string, maxLength: 2000, default: "" }
+        dueAt: { type: string, format: date-time }
+        status:
+          allOf: [{ $ref: "#/components/schemas/TodoStatus" }]
+          default: TODO
+    Todo:
+      type: object
+      required: [id, title, description, dueAt, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        dueAt: { type: string, format: date-time }
+        status: { $ref: "#/components/schemas/TodoStatus" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN] }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [VALIDATION_ERROR, UNAUTHORIZED, NOT_FOUND, EMAIL_TAKEN, TOO_MANY_REQUESTS, INTERNAL_ERROR]
+        message: { type: string }
+
+  responses:
+    ValidationError:
+      description: The request is malformed or a field is invalid (`VALIDATION_ERROR`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing, invalid or expired credentials (`UNAUTHORIZED`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: The todo does not exist or belongs to another user (`NOT_FOUND`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: Too many auth requests from this IP (`TOO_MANY_REQUESTS`); retry after the time in `Retry-After`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
