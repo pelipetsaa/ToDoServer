@@ -14,6 +14,7 @@ import java.time.Duration;
 public class AuthRateLimiter {
 
     private static final Duration REFILL_PERIOD = Duration.ofMinutes(1);
+    private static final long NANOS_PER_SECOND = Duration.ofSeconds(1).toNanos();
 
     private final int requestsPerMinute;
     private final Cache<String, Bucket> buckets = Caffeine.newBuilder()
@@ -29,7 +30,8 @@ public class AuthRateLimiter {
     public void consume(String clientKey) {
         ConsumptionProbe probe = buckets.get(clientKey, key -> newBucket()).tryConsumeAndReturnRemaining(1);
         if (!probe.isConsumed()) {
-            long seconds = Duration.ofNanos(probe.getNanosToWaitForRefill()).toSeconds() + 1;
+            // Rounded up, so a client that waits that long is served; exactly 60 s stays 60, not 61.
+            long seconds = Math.max(1, Math.ceilDiv(probe.getNanosToWaitForRefill(), NANOS_PER_SECOND));
             throw new RateLimitExceededException(seconds);
         }
     }
