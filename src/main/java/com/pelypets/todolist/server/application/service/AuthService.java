@@ -7,6 +7,7 @@ import com.pelypets.todolist.server.application.port.out.PasswordHasher;
 import com.pelypets.todolist.server.application.port.out.RefreshTokenGenerator;
 import com.pelypets.todolist.server.application.port.out.RefreshTokenRepository;
 import com.pelypets.todolist.server.application.port.out.UserRepository;
+import com.pelypets.todolist.server.domain.event.RefreshTokenReused;
 import com.pelypets.todolist.server.domain.event.UserRegistered;
 import com.pelypets.todolist.server.domain.exception.EmailTakenException;
 import com.pelypets.todolist.server.domain.exception.UnauthorizedException;
@@ -17,14 +18,23 @@ import com.pelypets.todolist.server.domain.model.TokenPair;
 import com.pelypets.todolist.server.domain.model.User;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
+/**
+ * Transactions are explicit and short: hashing a password (about 250 ms of CPU) and verifying a Google token (possibly
+ * an HTTP call) happen before one starts, so a sign-in never holds a database connection while it waits on them.
+ */
 @Service
-@Transactional
 public class AuthService implements AuthUseCase {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     private final UserRepository users;
     private final RefreshTokenRepository refreshTokens;
@@ -33,6 +43,7 @@ public class AuthService implements AuthUseCase {
     private final RefreshTokenGenerator refreshTokenGenerator;
     private final GoogleTokenVerifier googleTokenVerifier;
     private final ApplicationEventPublisher events;
+    private final TransactionOperations transactions;
     private final AuthSettings settings;
     private final Clock clock;
 
@@ -44,6 +55,7 @@ public class AuthService implements AuthUseCase {
             RefreshTokenGenerator refreshTokenGenerator,
             GoogleTokenVerifier googleTokenVerifier,
             ApplicationEventPublisher events,
+            TransactionOperations transactions,
             AuthSettings settings,
             Clock clock) {
         this.users = users;
@@ -53,6 +65,7 @@ public class AuthService implements AuthUseCase {
         this.refreshTokenGenerator = refreshTokenGenerator;
         this.googleTokenVerifier = googleTokenVerifier;
         this.events = events;
+        this.transactions = transactions;
         this.settings = settings;
         this.clock = clock;
     }
@@ -64,17 +77,20 @@ public class AuthService implements AuthUseCase {
         DomainRules.require(DomainRules.passwordError(password));
         if (users.findByEmail(normalized).isPresent()) throw new EmailTakenException();
 
-        User user = users.create(User.withPassword(normalized, passwordHasher.hash(password), clock.instant()));
-        events.publishEvent(new UserRegistered(user.id(), UserRegistered.Method.PASSWORD));
-        return issueTokens(user.id());
+        String hash = passwordHasher.hash(password);
+        return inTransaction(() -> {
+            User user = users.create(User.withPassword(normalized, hash, clock.instant()));
+            events.publishEvent(new UserRegistered(user.id(), UserRegistered.Method.PASSWORD));
+            return issueTokens(user.id(), UUID.randomUUID());
+        });
     }
 
     @Override
     public TokenPair login(String email, String password) {
-        User user = users.findByEmail(DomainRules.normalizeEmail(email)).orElseThrow(AuthService::invalidCredentials);
-        String hash = user.password().orElseThrow(AuthService::invalidCredentials);
-        if (!passwordHasher.verify(password, hash)) throw invalidCredentials();
-        return issueTokens(user.id());
+        Optional<User> user = users.findByEmail(DomainRules.normalizeEmail(email));
+        boolean valid = passwordHasher.verify(password, user.flatMap(User::password).orElse(null));
+        if (!valid || user.isEmpty()) throw invalidCredentials();
+        return inTransaction(() -> issueTokens(user.get().id(), UUID.randomUUID()));
     }
 
     @Override
@@ -83,19 +99,25 @@ public class AuthService implements AuthUseCase {
                 .orElseThrow(() -> new UnauthorizedException("Invalid Google token"));
         String email = DomainRules.normalizeEmail(identity.email());
 
-        User user = users.findByGoogleSubject(identity.subject())
-                .or(() -> users.findByEmail(email).map(existing -> linkGoogle(existing, identity.subject())))
-                .orElseGet(() -> createGoogleUser(email, identity.subject()));
-        return issueTokens(user.id());
+        return inTransaction(() -> {
+            User user = users.findByGoogleSubject(identity.subject())
+                    .or(() -> users.findByEmail(email).map(existing -> linkGoogle(existing, identity)))
+                    .orElseGet(() -> createGoogleUser(email, identity.subject()));
+            return issueTokens(user.id(), UUID.randomUUID());
+        });
     }
 
     /**
-     * Email sign-up does not verify the address, so whoever set the password may not own the mailbox. Google has
-     * verified it: the password and every session opened with it are revoked, and only Google signs in from now on.
+     * Email sign-up does not verify the address, so whoever set the password may not own the mailbox. When Google manages
+     * the mailbox it has proven ownership: the password and every session opened with it are revoked, and only Google
+     * signs in from now on. For any other address Google's word is not enough to take the account over.
      */
-    private User linkGoogle(User user, String subject) {
+    private User linkGoogle(User user, GoogleIdentity identity) {
         if (user.isLinkedToGoogle()) throw new UnauthorizedException("This email is linked to another Google account");
-        users.linkGoogleSubject(user.id(), subject);
+        if (!identity.emailAuthoritative()) {
+            throw new UnauthorizedException("This email has an account; sign in with its password");
+        }
+        users.linkGoogleSubject(user.id(), identity.subject());
         refreshTokens.deleteAllForUser(user.id());
         return user;
     }
@@ -111,14 +133,30 @@ public class AuthService implements AuthUseCase {
         }
     }
 
+    /** The revocation of a reused token's session must commit, so failures are returned rather than thrown. */
     @Override
     public TokenPair refresh(String refreshToken) {
         String hash = refreshTokenGenerator.hash(refreshToken);
-        RefreshToken stored = refreshTokens.findByHash(hash).orElseThrow(AuthService::invalidRefreshToken);
-        // Deleting first makes rotation single-use even under concurrent refresh attempts.
-        if (!refreshTokens.deleteByHash(hash)) throw invalidRefreshToken();
-        if (stored.isExpiredAt(clock.instant())) throw invalidRefreshToken();
-        return issueTokens(stored.userId());
+        Optional<TokenPair> pair = inTransaction(() -> rotate(hash));
+        return pair.orElseThrow(AuthService::invalidRefreshToken);
+    }
+
+    private Optional<TokenPair> rotate(String hash) {
+        Optional<RefreshToken> stored = refreshTokens.findByHash(hash);
+        if (stored.isEmpty()) {
+            refreshTokens.findUsedFamily(hash).ifPresent(this::revokeReusedFamily);
+            return Optional.empty();
+        }
+        RefreshToken token = stored.get();
+        // Consuming first makes rotation single-use even under concurrent refresh attempts.
+        if (!refreshTokens.consume(hash) || token.isExpiredAt(clock.instant())) return Optional.empty();
+        return Optional.of(issueTokens(token.userId(), token.familyId()));
+    }
+
+    private void revokeReusedFamily(UUID familyId) {
+        log.warn("A rotated refresh token was presented again; revoking its session {}", familyId);
+        refreshTokens.deleteFamily(familyId);
+        events.publishEvent(new RefreshTokenReused(familyId));
     }
 
     @Override
@@ -127,19 +165,29 @@ public class AuthService implements AuthUseCase {
     }
 
     @Override
-    @Transactional(readOnly = true)
     public User currentUser(UUID userId) {
         return users.findById(userId).orElseThrow(() -> new UnauthorizedException("User no longer exists"));
     }
 
-    private TokenPair issueTokens(UUID userId) {
+    @Override
+    public void deleteAccount(UUID userId) {
+        users.delete(userId);
+    }
+
+    private TokenPair issueTokens(UUID userId, UUID familyId) {
         Instant now = clock.instant();
         // Tokens of sessions that were never refreshed or logged out would otherwise stay in the table forever.
         refreshTokens.deleteExpiredForUser(userId, now);
         String refreshToken = refreshTokenGenerator.generate();
-        refreshTokens.save(new RefreshToken(
-                UUID.randomUUID(), userId, refreshTokenGenerator.hash(refreshToken), now.plus(settings.refreshTokenTtl())));
+        refreshTokens.save(new RefreshToken(UUID.randomUUID(), userId, familyId, refreshTokenGenerator.hash(refreshToken),
+                now, now.plus(settings.refreshTokenTtl())));
+        // Every sign-in adds a session; the oldest ones beyond the limit are signed out.
+        refreshTokens.keepNewestForUser(userId, settings.maxSessionsPerUser());
         return new TokenPair(accessTokenIssuer.issue(userId), refreshToken, accessTokenIssuer.ttlSeconds());
+    }
+
+    private <T> T inTransaction(Supplier<T> work) {
+        return transactions.execute(status -> work.get());
     }
 
     private static UnauthorizedException invalidCredentials() {

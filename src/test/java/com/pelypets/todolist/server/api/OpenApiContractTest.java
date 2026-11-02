@@ -19,12 +19,17 @@ class OpenApiContractTest extends ApiTest {
 
     private static final Set<String> HTTP_METHODS = Set.of("get", "post", "put", "delete", "patch");
 
+    /** Operations this server adds to the Ktor server's API. */
+    private static final Set<String> ADDITIONS = Set.of("DELETE /api/v1/me deleteAccount");
+
     @Test
     void generatedSpecHasTheSameOperationsAsTheKtorServer() throws IOException {
         Response generated = get("/v3/api-docs", null);
         assertThat(generated.status()).isEqualTo(HttpStatus.OK);
 
-        assertThat(operations(read(generated, Map.class))).isEqualTo(operations(reference()));
+        Set<String> expected = operations(reference());
+        expected.addAll(ADDITIONS);
+        assertThat(operations(read(generated, Map.class))).isEqualTo(expected);
     }
 
     @Test

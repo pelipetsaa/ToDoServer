@@ -75,6 +75,10 @@ public abstract class ApiTest {
         assertThat(activeGoogleVerifier).isSameAs(google);
     }
 
+    protected RestClient client() {
+        return client;
+    }
+
     protected Response call(HttpMethod method, String path, Object body, String token) {
         var request = client.method(method).uri(path);
         if (token != null) request.headers(headers -> headers.setBearerAuth(token));

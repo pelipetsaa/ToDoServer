@@ -9,6 +9,7 @@ import com.pelypets.todolist.server.domain.model.GoogleIdentity;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +46,15 @@ public class GoogleApiTokenVerifier implements GoogleTokenVerifier {
 
         GoogleIdToken.Payload payload = token.getPayload();
         if (payload.getEmail() == null || !Boolean.TRUE.equals(payload.getEmailVerified())) return Optional.empty();
-        return Optional.of(new GoogleIdentity(payload.getSubject(), payload.getEmail()));
+        return Optional.of(new GoogleIdentity(payload.getSubject(), payload.getEmail(), isManagedByGoogle(payload)));
+    }
+
+    /**
+     * Google is the authority for Gmail addresses and for Workspace domains, which it marks with the {@code hd} claim.
+     * See https://developers.google.com/identity/gsi/web/guides/verify-google-id-token.
+     */
+    private static boolean isManagedByGoogle(GoogleIdToken.Payload payload) {
+        String email = payload.getEmail().toLowerCase(Locale.ROOT);
+        return payload.getHostedDomain() != null || email.endsWith("@gmail.com") || email.endsWith("@googlemail.com");
     }
 }

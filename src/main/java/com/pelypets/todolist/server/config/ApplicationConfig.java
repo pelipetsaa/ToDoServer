@@ -7,6 +7,7 @@ import com.pelypets.todolist.server.application.port.out.GoogleTokenVerifier;
 import com.pelypets.todolist.server.application.port.out.PasswordHasher;
 import com.pelypets.todolist.server.application.port.out.RefreshTokenGenerator;
 import com.pelypets.todolist.server.application.service.AuthSettings;
+import com.pelypets.todolist.server.application.service.TodoSettings;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.context.annotation.Bean;
@@ -29,7 +30,12 @@ class ApplicationConfig {
 
     @Bean
     AuthSettings authSettings(AppProperties properties) {
-        return new AuthSettings(properties.jwt().refreshTokenTtl());
+        return new AuthSettings(properties.jwt().refreshTokenTtl(), properties.jwt().maxSessionsPerUser());
+    }
+
+    @Bean
+    TodoSettings todoSettings(AppProperties properties) {
+        return new TodoSettings(properties.todos().maxListRange(), properties.todos().maxPerUser());
     }
 
     @Bean

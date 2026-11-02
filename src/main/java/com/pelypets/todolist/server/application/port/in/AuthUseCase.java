@@ -12,10 +12,16 @@ public interface AuthUseCase {
 
     TokenPair loginWithGoogle(String idToken);
 
-    /** Single use: the refresh token sent is revoked and a new pair is issued. */
+    /**
+     * Single use: the refresh token sent is revoked and a new pair is issued. A token that was already used revokes its
+     * whole session, since someone else holds a copy.
+     */
     TokenPair refresh(String refreshToken);
 
     void logout(String refreshToken);
 
     User currentUser(UUID userId);
+
+    /** Deletes the account, its todos and its sessions. Access tokens already issued expire on their own. */
+    void deleteAccount(UUID userId);
 }

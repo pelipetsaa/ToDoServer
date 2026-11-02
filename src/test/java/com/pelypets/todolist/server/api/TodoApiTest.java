@@ -88,6 +88,43 @@ class TodoApiTest extends ApiTest {
     }
 
     @Test
+    void singleTodoResponsesCarryTheVersionAsETag() {
+        String token = register().accessToken();
+        Response created = call(HttpMethod.POST, ApiPaths.TODOS, input("Versioned", "", "2026-10-29T10:00:00Z", "TODO"), token);
+        String id = read(created, Todo.class).id();
+
+        assertThat(created.headers().getETag()).isEqualTo("\"0\"");
+        assertThat(get(todo(id), token).headers().getETag()).isEqualTo("\"0\"");
+        Response updated = call(HttpMethod.PUT, todo(id), input("Versioned", "v1", "2026-10-29T10:00:00Z", "TODO"), token);
+        assertThat(updated.headers().getETag()).isEqualTo("\"1\"");
+    }
+
+    @Test
+    void anUpdateBasedOnAStaleVersionIsRejectedInsteadOfOverwriting() {
+        String token = register().accessToken();
+        Todo created = createTodo(token, "Shared", "2026-10-29T10:00:00Z", "TODO");
+        Response phone = putIfMatch(token, created.id(), "\"0\"", "Edited on phone");
+        assertThat(phone.status()).isEqualTo(HttpStatus.OK);
+
+        assertError(putIfMatch(token, created.id(), "\"0\"", "Edited on laptop"), HttpStatus.CONFLICT, ErrorCode.CONFLICT);
+        assertError(putIfMatch(token, created.id(), "garbage", "Edited on laptop"), HttpStatus.CONFLICT, ErrorCode.CONFLICT);
+
+        assertThat(read(get(todo(created.id()), token), Todo.class).title()).isEqualTo("Edited on phone");
+        assertThat(putIfMatch(token, created.id(), phone.headers().getETag(), "Merged").status()).isEqualTo(HttpStatus.OK);
+        assertThat(putIfMatch(token, created.id(), "*", "Forced").status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void listRejectsRangesLongerThanAYear() {
+        String token = register().accessToken();
+
+        assertError(get(ApiPaths.TODOS + "?from=2026-01-01T00:00:00Z&to=2027-01-03T00:00:00Z", token),
+                HttpStatus.BAD_REQUEST, ErrorCode.VALIDATION_ERROR);
+        assertThat(get(ApiPaths.TODOS + "?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z", token).status())
+                .isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
     void deleteRemovesTheTodo() {
         String token = register().accessToken();
         Todo created = createTodo(token, "Temp", "2026-10-29T10:00:00Z", "TODO");
@@ -128,6 +165,19 @@ class TodoApiTest extends ApiTest {
         assertError(call(HttpMethod.POST, ApiPaths.TODOS, input("Bad status", "", "2026-10-29T10:00:00Z", "LATER"), token),
                 HttpStatus.BAD_REQUEST, ErrorCode.VALIDATION_ERROR);
         assertError(get(todo("not-a-uuid"), token), HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND);
+    }
+
+    private Response putIfMatch(String token, String id, String ifMatch, String title) {
+        return client().put().uri(todo(id))
+                .headers(headers -> {
+                    headers.setBearerAuth(token);
+                    headers.setIfMatch(ifMatch);
+                })
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .body(input(title, "", "2026-10-29T10:00:00Z", "TODO"))
+                .exchange((request, response) -> new Response(HttpStatus.valueOf(response.getStatusCode().value()),
+                        new String(response.getBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8),
+                        response.getHeaders()));
     }
 
     private Todo createTodo(String token, String title, String dueAt, String status) {

@@ -5,6 +5,7 @@ import com.pelypets.todolist.server.adapter.in.web.dto.AuthDtos.GoogleLogin;
 import com.pelypets.todolist.server.adapter.in.web.dto.AuthDtos.RefreshTokenBody;
 import com.pelypets.todolist.server.adapter.in.web.dto.AuthDtos.TokenPairResponse;
 import com.pelypets.todolist.server.adapter.in.web.dto.AuthDtos.UserResponse;
+import com.pelypets.todolist.server.adapter.in.web.ratelimit.AccountRateLimiter;
 import com.pelypets.todolist.server.adapter.in.web.ratelimit.RateLimited;
 import com.pelypets.todolist.server.adapter.in.web.security.CurrentUserId;
 import com.pelypets.todolist.server.application.port.in.AuthUseCase;
@@ -14,6 +15,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -26,9 +28,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final AuthUseCase auth;
+    private final AccountRateLimiter accountLimiter;
 
-    public AuthController(AuthUseCase auth) {
+    public AuthController(AuthUseCase auth, AccountRateLimiter accountLimiter) {
         this.auth = auth;
+        this.accountLimiter = accountLimiter;
     }
 
     @PostMapping(ApiPaths.AUTH + "/register")
@@ -41,8 +45,10 @@ public class AuthController {
 
     @PostMapping(ApiPaths.AUTH + "/login")
     @RateLimited
-    @Operation(operationId = "login", summary = "Sign in with email and password")
+    @Operation(operationId = "login", summary = "Sign in with email and password",
+            description = "Rate limited per client IP and, separately, per account.")
     public TokenPairResponse login(@Valid @RequestBody EmailCredentials body) {
+        accountLimiter.consume(body.email());
         return TokenPairResponse.from(auth.login(body.email(), body.password()));
     }
 
@@ -75,5 +81,13 @@ public class AuthController {
     @Operation(operationId = "me", summary = "Current user", security = @SecurityRequirement(name = "bearerAuth"))
     public UserResponse me(@CurrentUserId UUID userId) {
         return UserResponse.from(auth.currentUser(userId));
+    }
+
+    @DeleteMapping(ApiPaths.ME)
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Operation(operationId = "deleteAccount", summary = "Delete the account", security = @SecurityRequirement(name = "bearerAuth"),
+            description = "Deletes the account with its todos and sessions. Access tokens already issued expire within minutes.")
+    public void deleteAccount(@CurrentUserId UUID userId) {
+        auth.deleteAccount(userId);
     }
 }
