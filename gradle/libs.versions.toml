@@ -1,7 +1,7 @@
 [versions]
 spring-boot = "4.1.2"
 springdoc = "3.2.0"
-bucket4j = "8.21.0"
+bucket4j = "8.22.0"
 bcrypt = "0.10.2"
 google-api-client = "2.9.2"
 archunit = "1.5.1"
